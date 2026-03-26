@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	cat <<-'EOF'
+		Usage: ./deploy host:port <mode> [domain]
+
+		Obfuscation modes:
+		  standard  basic MTProto obfuscation, easy to detect and block
+		  padding   random padding, harder to detect via packet size analysis
+		  tls       fake TLS, traffic looks like HTTPS to the given domain (hardest to block)
+
+		Examples:
+		  ./deploy example.com:443 padding
+		  ./deploy example.com:443 tls google.com
+	EOF
+	exit 1
+}
+
+if [ $# -lt 2 ] || ! [[ "$1" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]]; then
+	usage
+fi
+
+server="${1%%:*}"
+port="${1##*:}"
+mode="$2"
+
+case "$mode" in
+	standard|padding)
+		if [ $# -ne 2 ]; then usage; fi
+		;;
+	tls)
+		if [ $# -ne 3 ] || ! [[ "$3" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+			usage
+		fi
+		if ! command -v xxd &>/dev/null; then
+			echo "Error: xxd is required for tls mode"
+			exit 1
+		fi
+		domain="$3"
+		;;
+	*) usage ;;
+esac
+
+tag=$(date -u +%Y-%m-%d-%H-%M-%S)
+
+echo "Building Docker image..."
+docker build --platform linux/amd64 -t mtproxy:"$tag" .
+docker image ls mtproxy:"$tag" --format 'Image size: {{.Size}}'
+
+echo "Transferring image to $server..."
+docker save mtproxy:"$tag" | ssh "$server" 'docker load'
+
+read -rsp "Secret: " secret
+echo
+
+if ! [[ "$secret" =~ ^[0-9a-f]{32}$ ]]; then
+	echo "Error: secret must be 32 hex characters"
+	exit 1
+fi
+
+echo "Starting MTProxy on port $port..."
+domain_export=""
+docker_domain_arg=""
+if [ "$mode" = tls ]; then
+	domain_export="export DOMAIN=$(printf '%q' "$domain")"
+	docker_domain_arg="-e DOMAIN"
+fi
+# the secret is visible via docker inspect, which is fine since it's a shared proxy credential, not a private key
+# shellcheck disable=SC2087
+ssh "$server" bash -s <<EOF
+	set -euo pipefail
+	export SECRET=$(printf '%q' "$secret")
+	export PORT=$(printf '%q' "$port")
+	$domain_export
+	docker rm -f mtproxy 2>/dev/null || true
+	docker run -d --name mtproxy --restart unless-stopped --network host -v mtproxy-data:/data -e SECRET -e PORT $docker_domain_arg mtproxy:"$tag"
+	docker images mtproxy --format '{{.Repository}}:{{.Tag}}' | grep -xv "mtproxy:$tag" | xargs -r docker rmi 2>/dev/null || true
+	docker image prune -f >/dev/null
+EOF
+
+case "$mode" in
+	standard) link_secret="$secret" ;;
+	padding) link_secret="dd${secret}" ;;
+	tls) link_secret="ee${secret}$(printf "%s" "$domain" | xxd -ps)" ;;
+esac
+
+echo
+echo "MTProxy is running!"
+echo
+echo "Share this link with your users:"
+echo "https://t.me/proxy?server=${server}&port=${port}&secret=${link_secret}"

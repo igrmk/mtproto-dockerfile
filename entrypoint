@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${SECRET:-}" ] || [ -z "${PORT:-}" ]; then
+	echo "Error: SECRET and PORT environment variables are required"
+	exit 1
+fi
+
+if [ -f /data/aes-key ] && [ -f /data/config ]; then
+	retries=3
+else
+	retries=15
+fi
+# curl uses exponential backoff by default (1s, 2s, 4s, ..., capped at 10 min)
+# per testing, curl -f does not truncate existing files on error
+curl -sSf --max-time 30 --retry "$retries" https://core.telegram.org/getProxySecret -o /data/aes-key || true
+curl -sSf --max-time 30 --retry "$retries" https://core.telegram.org/getProxyConfig -o /data/config || true
+if [ ! -f /data/aes-key ] || [ ! -f /data/config ]; then
+	echo "Error: failed to fetch configs and no cached versions available"
+	exit 1
+fi
+now=$(date +%s)
+echo "Secret age: $(( (now - $(stat -c %Y /data/aes-key)) / 3600 ))h"
+echo "Config age: $(( (now - $(stat -c %Y /data/config)) / 3600 ))h"
+
+# restart daily at 01:00 UTC to refresh configs, clients reconnect automatically
+# date -d requires GNU coreutils
+restart_date=$(date -ud '36 hours' +%Y-%m-%d)
+restart_timestamp=$(date -d "$restart_date 01:00 UTC" +%s)
+echo "Scheduled restart at $(date -d "@$restart_timestamp" -u '+%Y-%m-%d %H:%M UTC')"
+set -- -u nobody -H "$PORT" -S "$SECRET" --aes-pwd /data/aes-key /data/config -M 1
+if [ -n "${DOMAIN:-}" ]; then
+	set -- "$@" -D "$DOMAIN"
+fi
+exec timeout --kill-after=10 "$((restart_timestamp - now))" mtproto-proxy "$@"
