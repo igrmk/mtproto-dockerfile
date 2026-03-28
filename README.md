@@ -27,7 +27,7 @@ Then deploy. The script builds the image, transfers it via SSH to the specified 
 - **tls** — fake TLS, traffic looks like HTTPS to the given domain (hardest to block)
 
 ```bash
-./deploy example.com:443 standard
-./deploy example.com:443 padding
-./deploy example.com:443 tls example.org
+./deploy myserver.com:443 standard
+./deploy myserver.com:443 padding
+./deploy myserver.com:443 tls dzen.ru
 ```

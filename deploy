@@ -11,8 +11,8 @@ usage() {
 		  tls       fake TLS, traffic looks like HTTPS to the given domain (hardest to block)
 
 		Examples:
-		  ./deploy example.com:443 padding
-		  ./deploy example.com:443 tls google.com
+		  ./deploy myserver.com:443 padding
+		  ./deploy myserver.com:443 tls dzen.ru
 	EOF
 	exit 1
 }
